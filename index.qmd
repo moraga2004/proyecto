@@ -1,0 +1,306 @@
+---
+title: "Proyecto"
+author: "Fernanda Chinchilla - Franchesca Moraga"
+format: 
+  dashboard:
+    orientation: rows
+server: shiny
+---
+
+```{r}
+#| label: carga-paquetes
+#| context: setup
+#| warning: false
+#| message: false
+
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(plotly)
+library(sf)
+library(leaflet)
+library(leafem)
+library(ggplot2)
+```
+
+```{r}
+#| label: carga-union-datos
+#| context: data
+
+
+# CARGA DE DATOS
+# Registros de presencia
+registros <-
+  st_read(
+    dsn = "registros-iguanidae.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+    ),
+    quiet = TRUE
+  )
+# Asignación del CRS WGS84 al objeto registros
+st_crs(registros) <- 4326
+
+# Para asegurarse de que la columna year sea numérica
+registros$year <- as.integer(registros$year)
+
+
+# Especies
+especies <-
+  read_csv("especies-reptiles.csv")
+
+# Provincias
+regiones <-
+  st_read("regiones-socioeconomicas.gpkg", quiet = TRUE)
+
+# UNIONES DE DATOS
+
+# Registros de presencia + Especies
+registros_union_especies <-
+  left_join(
+    x = registros,
+    y = especies,
+    by = "species"
+  )
+
+# Registros de presencia + Especies + Regiones
+registros_union_especies_regiones <-
+  st_join(
+    x = registros_union_especies,
+    y = dplyr::select(regiones, region),
+    join = st_within
+  )
+
+```
+
+#  {.sidebar}
+
+```{r}
+#| label: panel-widgets-entrada
+
+
+# Lista ordenada de especies
+# con un elemento adicional = "Todas"
+lista_especies <- unique(registros_union_especies_regiones$species)
+lista_especies <- sort(lista_especies)
+lista_especies <- c("Todas", lista_especies)
+
+# Widget de lista de selección de especies
+selectInput(
+  inputId = "especie",      
+  label = "Especie",        
+  choices = lista_especies, 
+  selected = "Todas"       
+)
+
+#Lista ordenada de lista raoja
+# con un elemento adicional = "Todas"
+lista_roja <- unique(registros_union_especies_regiones$iucnRedListCategory)
+lista_roja <- sort(lista_roja)
+lista_roja <- c("Todas", lista_roja)
+
+# Widget de lista de seleccion de 
+selectInput(
+  inputId = "listaroja",      
+  label = "Lista Roja",       
+  choices = lista_roja, 
+  selected = "Todas"        
+)
+
+#Lista ordenada de lista raoja
+# con un elemento adicional = "Todas"
+lista_regiones <- unique(registros_union_especies_regiones$region)
+lista_regiones <- sort(lista_regiones)
+lista_regiones <- c("Todas", lista_regiones)
+
+# Widget de lista de seleccion de 
+selectInput(
+  inputId = "listaregiones",      
+  label = "Lista Regiones",        
+  choices = lista_regiones, 
+  selected = "Todas"        
+)
+
+# año mínima y máximo
+año_minimo <- min(registros_union_especies_regiones$year, na.rm = TRUE)
+año_maximo <- max(registros_union_especies_regiones$year, na.rm = TRUE)
+
+# Widget deslizador de selección de edad
+sliderInput(
+  inputId = "año",
+  label = "Año",
+  min = año_minimo,
+  max = año_maximo,
+  value = c(1874, 2024)
+)
+```
+
+# La Tabla y el grafico
+
+```{r}
+#| label: salida-tabla
+#| title: "Lista de registros de presencia"
+
+
+# Tabla interactiva
+dataTableOutput(
+	outputId =  "tabla" # identificador del widget
+)
+```
+
+```{r}
+#| label: salida-grafico
+#| title: "Cantidad de registros de presencia"
+
+
+# Gráfico interactiva
+plotlyOutput(
+	outputId =  "grafico" # identificador del widget
+)
+```
+
+# Mapa
+
+```{r}
+#| label: salida-mapa
+#| title: "Distribución espacial de registros de presencia"
+
+
+# Mapa interactivo
+leafletOutput(
+	outputId =  "mapa" # identificador del widget
+)
+```
+
+```{r}
+#| label: servidor
+#| context: server
+
+# Función reactiva para filtrar los registros de presencia
+# de acuerdo con los filtros especificados por el usuario
+filtrar_registros <- reactive({
+  # Valor inicial del objeto que va a retornarse
+  registros_filtrados <- registros_union_especies_regiones
+  
+  # Se realiza el filtro, solamente si el usario ha seleccionado 
+  # una opción diferente a "Todas" en la lista de selección de especies
+  if (input$especie != "Todas") {
+    registros_filtrados <-
+      registros_filtrados |>
+      filter(species == input$especie)
+  }
+  
+    # Se realiza el filtro, solamente si el usario ha seleccionado 
+  # una opción diferente a "Todas" en la lista de selección de lista roja
+  
+if (input$listaroja != "Todas") {
+  registros_filtrados <-
+      registros_filtrados |>
+    filter(iucnRedListCategory == input$listaroja)
+}
+  
+   # Se realiza el filtro, solamente si el usario ha seleccionado 
+  # una opción diferente a "Todas" en la lista de selección de lista regiones
+if (input$listaregiones != "Todas") {
+  registros_filtrados <-
+      registros_filtrados |>
+    filter(region == input$listaregiones)
+}
+  
+  # Filtro por edad mínima
+  registros_filtrados <-
+    registros_filtrados |>
+    filter(year >= input$año[1])
+  
+    # Filtro por edad mínima
+  registros_filtrados <-
+    registros_filtrados |>
+    filter(year <= input$año[2])
+
+  return(registros_filtrados)
+}) 
+
+# Mapa interactivo de registros de presencia
+output$mapa <- renderLeaflet({
+	# Filtrado del conjunto de datos
+  registros_union_especies_regiones <- filtrar_registros()
+  
+  # Mapa interactivo
+  #Colores riqueza especies
+  colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Blues",
+    domain = registros_union_especies$registros_union_especie_regiones,
+    na.color = "transparent"
+  )
+  
+  leaflet() |>
+    addTiles(group = "OSM") |>
+    addPolygons(
+    data = regiones,
+    fillColor = ~ colores_riqueza_especies(
+      registros_union_especies$registros_union_especie_regiones),
+    fillOpacity =  0.5,
+        popup = paste(
+      paste("<strong>Region:</strong>", regiones$region),
+      sep = '<br/>'
+  ) )|>
+    addCircleMarkers(
+      data = registros_union_especies_regiones,
+      radius = 4,
+      color = "pink",
+      stroke = TRUE,
+      popup = paste(
+        paste0("<strong>Especie</strong>: ", registros_union_especies_regiones$species),
+        paste0("<strong>Region</strong>: ", registros_union_especies_regiones$region),
+        paste0("<strong>Fecha</strong>: ", registros_union_especies_regiones$eventDate),
+        paste0("<strong>Lista Roja</strong>: ", registros_union_especies_regiones$iucnRedListCategory),
+        sep = "<br>"
+      )
+    )
+})
+
+
+# Tabla interactiva de registros de presencia
+output$tabla <- renderDataTable({
+  # Filtrado del conjunto de datos
+  registros_union_especies_regiones <- filtrar_registros()
+  
+  # Tabla interactiva
+  registros_union_especies_regiones |>
+    st_drop_geometry() |>
+    select(species, iucnRedListCategory, region) |>
+    datatable(
+      rownames = FALSE,
+      colnames = c("Especie", "Categoría en la Lista Roja", "Region"),
+      options = list(
+        pageLength = 10,
+        language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+      )
+    )
+})
+
+
+# Gráfico interactivo de registros de presencia por especie
+output$grafico <- renderPlotly({
+  # Filtrado del conjunto de datos
+  registros_union_especies_regiones <- filtrar_registros()
+  
+  grafico_ggplot2 <-
+    registros_union_especies_regiones |>
+    st_drop_geometry() |>
+    group_by(region) |>
+    summarize(n = n()) |>
+    ggplot(aes(x = reorder(region, -n),
+               y = n)) +
+    geom_col() +
+    
+    xlab("Regiones") +
+    ylab("Cantidad de registros")
+  
+  ggplotly(grafico_ggplot2) |> config(locale = "es")
+  
+})
+```
